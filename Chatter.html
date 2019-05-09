@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width">
+        <title>Chatter Test</title>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/0.3.20/peer.min.js"></script>
+		<style>
+			body {font-family: 'DejaVu Sans', Arial, Helvetica, sans-serif; background-color: white; min-width: 450px;}
+			h1 {font-size: 1.75em;}
+			h2 {text-align: center; font-size: 4em;}
+			td {width: 50%;}
+			input {margin-bottom: 5px;}
+			a:visited{color: blue;}
+			.display {width: 100%; min-height: 400px; padding-bottom: 20px;}
+			.control {width: 100%; padding-bottom: 20px;}
+			.control-button {width: 100%; min-height: 50px;}
+			.display-box {border: 2px solid black;}
+			.title {vertical-align: top;}
+			.no-display {display: none;}
+			.status {vertical-align: text-top; font-weight: bold; margin-bottom: 10px; overflow: auto;}
+			.message {max-height: 600px; margin-bottom: 10px; overflow: auto;}
+			.msg-time {color: blue;}
+			.errorMsg {color: orange;}
+			.selfMsg {color: green;}
+			.peerMsg {color: red;}
+            img {max-width: 70%; height: auto;}
+	</style>
+    </head>
+    <body>
+        <table class="display">
+            <tr>
+                <td class="title">Status:</td>
+                <td class="title">Messages:</td>
+            </tr>
+            <tr>
+                <td>
+                    <span id="my-id" style="font-weight: bold;" title="This is your randomized ID.">ID:</span> <span id="click-to-copy">(Click here to copy invite link)</span>
+                </td>
+                <td>
+                        <span style="font-weight: bold">Username: </span>
+                        <input type="text" id="username" title="Enter a username!">
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <span style="font-weight: bold">Connect to : </span>
+                    <input type="text" id="peer-id" title="Input your friend's ID!">
+                    <button id="connect-button">Connect</button>
+                </td>
+                <td>
+                    <input type="text" id="sendMessageBox" placeholder="Enter a message..." autofocus="true" />
+                    <button type="button" id="sendButton">Send</button>
+                    <button type="button" id="clearButton">Clear Messages</button>
+                    Upload an image: <input type="file" id="fileButton" accept="image/*"/>
+                </td>
+            </tr>
+            <tr>
+                <td><div class="status" id="status"></div></td>
+                <td><div class="message" id="message"></div></td>
+            </tr>
+        </table>
+
+        <script type="text/javascript">
+                var lastPeerId = null; // Saved personal peer ID
+                var peer = null; // Own peer object
+                var peerId = null; // Personal peer ID
+                var conn = {}; // Object of connections to external peers or "friends"
+                var myId = document.getElementById("my-id");
+                var clickToCopy = document.getElementById("click-to-copy");
+                var peerIdInput = document.getElementById("peer-id");
+                var usernameInput = document.getElementById("username");
+                var connectButton = document.getElementById("connect-button");
+                var statusBox = document.getElementById("status");
+                var message = document.getElementById("message");
+                var sendMessageBox = document.getElementById("sendMessageBox");
+                var fileButton = document.getElementById("fileButton");
+                var sendButton = document.getElementById("sendButton");
+                var clearButton = document.getElementById("clearButton");
+                var getMembersFlag = -1;
+
+                // Create our own peer object, and set up relevant callbacks
+                function initialize() {
+                    // Create a self Peer object connected to PeerJS server
+                    peer = new Peer(null, {
+                        debug: 2
+                    });
+					console.log("Grabbing an ID from PeerJS servers");
+
+                    peer.on('open', function (id) {
+                        // Workaround for peer.reconnect deleting previous id
+                        if (peer.id === null) {
+                            console.log('Received null id from peer open');
+                            peer.id = lastPeerId;
+                        } else {
+                            lastPeerId = peer.id;
+                        }
+                        console.log('ID: ' + peer.id);
+                        myId.innerHTML = "ID: " + peer.id;
+                        statusBox.innerHTML = "Awaiting connection...";
+                        scanUrlParams();
+                    });
+                    peer.on('connection', function (c) { // Called when someone else connects to us
+                        addConnection(c);
+                        ready(c.peer);
+                    });
+                    peer.on('disconnected', function () { // Called when we lose connection to signalling server
+                        statusBox.innerHTML = "Connection lost. Please reconnect";
+                        console.log('Connection lost. Please reconnect');
+                        // Workaround for peer.reconnect deleting previous id
+                        peer.id = lastPeerId;
+                        peer._lastServerId = lastPeerId;
+                        peer.reconnect();
+                    });
+                    peer.on('close', function() { // Called when our peer is destroyed
+                        conn = {};
+                        statusBox.innerHTML = "Connection destroyed. Please refresh";
+                        console.log('Connection destroyed');
+                    });
+                    peer.on('error', function (err) { // Handle any other errors
+                        console.log(err);
+                        alert('' + err);
+                    });
+                };
+
+                // Read URL Parameters. If any relevant ones exist, use them
+                function scanUrlParams() {
+                    var id = new URLSearchParams(window.location.search).get("join");
+                    if (id) {
+                        console.log("Detected join parameter: " + id);
+                        getMembersFlag = id;
+                        connectExternalPeer(id); // Connect to specified user
+                    } else {
+                        console.log("No join parameter detected");
+                    }
+                }
+
+                // Request list of members from host
+                function fetchMemberList(id) {
+                    console.log("fetchMemberList called: " + id);
+                        let msg = {};
+                        msg.type = "memberListRequest";
+                        msg.sender = peer.id;
+                        msg.private = false;
+                        conn[id].send(msg);
+                        console.log("Requested member list from " + id);
+                    //} else {console.log("Connection to master peer " + id + " failed");}
+                }
+
+                // Prepare list of connected peers (members) and send to requester
+                function sendMemberList(id) {
+                    console.log("sendMemberList called: " + id);
+                        var members = new Array();
+                        for (var peerConn in conn) { // For each connection
+                            if (peerConn != id) { // Check to ensure it's not the connection of the user making request
+                                members.push(peerConn); // and then add it to the member id list
+                            }
+                        }
+                        let msg = {}; // Then send the member list
+                        msg.type = "memberList";
+                        msg.sender = peer.id;
+                        msg.payload = members;
+                        msg.private = false;
+                        conn[id].send(msg);
+                        console.log("Sent member list to " + id + " with contents: " + members);
+                    //} else {console.log("Cannot send member list because no connection exists to " + id);}
+                }
+
+                // Generates an invite link and copies it to clipboard (doesn't seem to work on Safari on iPad)
+                function copyInviteUrl() {
+                    var inviteId = peer.id; // Obtain current ID
+                    if(inviteId && inviteId.length > 0) {
+                        var url = location.protocol + '//' + location.host + location.pathname; // Obtain current URL
+                        var inviteUrl = url + "?join=" + inviteId; // Create invite URL
+                        var temp = document.createElement('textarea'); // Create temporary field for URL
+                        console.log(inviteUrl);
+                        temp.value = inviteUrl; // Put share link into temp field
+                        temp.setAttribute('readonly', ''); // Make temp readonly to avoid browser focus
+                        temp.style = {position: 'absolute', left: '-9999px'}; // Hide out of view
+                        document.body.appendChild(temp); // Insert temp into document
+                        temp.select(); // Select temp
+                        document.execCommand('copy'); // Copy text from temp to user's clipboard
+                        document.body.removeChild(temp); // Clean up
+                    }
+                }
+
+                // Takes a connection object, checks if it is already added, and then adds it to relevant vars
+                function addConnection(c) {
+                    var id = c.peer; // Grab ID from peer
+                    if(Object.keys(conn).includes(id)) { // Check if we already have a connection stored with this peer
+                        console.log("Already connected to " + id);
+                    } else { // otherwise, add the connection
+                        conn[id] = c;
+                        console.log("Stored new connection to " + id);
+                        statusBox.innerHTML = "Connected to: " + c.peer;
+                    }
+                }
+                
+                // Takes a connection ID, disconnects if needed, and removes all traces (including removing from memberlists)
+                function removeConnection(id) {
+                    console.log("Removing connection with " + id);
+                    if(Object.keys(conn).includes(id)) { // Check if we have a connection to remove
+                        console.log("Connection record purged for " + id);
+                        delete conn[id];
+                    }
+                }
+
+                // Connect to an external peer
+                function connectExternalPeer(externalId) {
+                    console.log("connectExternalPeer called on " + externalId);
+                    // Create connection to external peer specified
+                    if(externalId != peer.id && !Object.keys(conn).includes(externalId)) { // Ensure we aren't already connected to that id (and it isn't us)
+                        conn[externalId] = peer.connect(externalId, {reliable: true});
+                        console.log("Connecting to " + externalId);
+
+                        conn[externalId].on('open', function () {
+                            statusBox.innerHTML += "<br>Connected to: " + externalId;
+                            console.log("Connected to: " + externalId);
+                            ready(externalId);
+                        });
+                    } else {
+                        console.log("Skipping " + externalId + ", already connected or else attempting connection to self.");
+                    }
+                };
+
+                // Read username from input field and format if needed
+                function grabUsername() {
+                    var name = usernameInput.value; // Fetch value of username field
+                    if (!name || name.replace(/ /g,'') == '') { // Ensure name exists and isn't just space(s)
+                        name = peer.id; // If no valid name entered, use your ID instead
+                    }
+                    return name;
+                }
+
+                // Once a connection is ready to go, set up message receipt handler and termination handler
+                function ready(id) {
+                    console.log("Connection with " + id + " is ready");
+                    conn[id].on('data', function (data) { // Register message receipt handler for connection
+                        console.log("Data received");
+                        var cueString = "<span class=\"cueMsg\">Cue: </span>";
+                        console.log("Received " + JSON.stringify(data));
+                        if(data.type == "textChat") {
+                            console.log("Adding text message");
+                            addMessage(data);
+                        } else if (data.type == "imageChat") {
+                            console.log("Adding image message");
+                            console.log("Just received, msg payload size is " + data.payload.size);
+                            // AFter image gets serialized and sent, we need to turn it back into a blob
+                            data.payload = new Blob([data.payload], {type: data.filetype});
+                            addImage(data);
+                        } else if (data.type == "memberListRequest") {
+                            sendMemberList(id);
+                        } else if (data.type == "memberList") {
+                            console.log("Receiving member list from " + id);
+                            var members = data.payload; // Get list of members (if any)
+                            if (members && members.length > 0) {
+                                console.log("Master peer is in a room with " + members.length + " other members");
+                                members.forEach(member => {
+                                    connectExternalPeer(member); // Connect to each other member                               
+                                });
+                                console.log("Done connecting to other members");
+                            } else {console.log("Master peer is in an empty room");}
+                        } else {console.log("Invalid message type received: " + data.type);}
+                    });
+                    conn[id].on('close', function () { // Register termination handler for connection
+                        statusBox.innerHTML += "<br>Connection closed with " + id;
+                        removeConnection(id);
+                    });
+                    if (getMembersFlag == id){ // If there is a pending request to get members list from this user, do it
+                        fetchMemberList(id);    // Get member list from user and connect to them
+                    }
+                    
+                }
+
+                // Take a sent or received text message object and insert it into the message box
+                function addMessage(msg) {
+					var now = new Date();
+					var h = now.getHours();
+					var m = now.getMinutes();
+					if (h > 12)
+						h -= 12;
+					else if (h == 0)
+						h = 12;
+                    if (m < 10)
+                        m = "0" + m;
+					message.innerHTML = "<br><span class=\"msg-time\">" + h + ":" + m + "</span>  -  " + msg.sender + ": " + msg.payload + message.innerHTML;
+                }
+                
+                // Take a sent or received image object and insert it into the message box
+                function addImage(msg) {
+                    console.log("about to add image, msg payload size is " + msg.payload.size);
+					var now = new Date();
+					var h = now.getHours();
+					var m = now.getMinutes();
+					if (h > 12)
+						h -= 12;
+					else if (h == 0)
+						h = 12;
+                    if (m < 10)
+                        m = "0" + m;
+                    var img = document.createElement("img");
+                    var imgUrl = URL.createObjectURL(msg.payload);
+                    img.src = imgUrl;
+                    var br = document.createElement("br");
+                    var date = document.createElement("span");
+                    date.setAttribute("class", "msg-time");
+                    date.textContent = h + ":" + m + " - ";
+                    message.prepend(br, date, msg.sender + ": ", img);
+				}
+				
+                // Insert system message into message box (takes a string, not a message object)
+				function addSystemMessage(text) {
+					message.innerHTML = "<br><span class=\"errorMsg\">Notice: </span>" + text + message.innerHTML;
+				}
+
+                // Listen for enter keypress in message box
+                sendMessageBox.onkeypress = function (e) {
+                    var event = e || window.event; // browser compatibility
+                    var char = event.which || event.keyCode;
+                    if (char == '13') // 13 is the decimal ASCII representation of enter
+                        sendButton.click();
+                };
+                // Send message to all connected peers
+                sendButton.onclick = function () {
+                    console.log("Send button clicked");
+                    if (Object.keys(conn).length > 0) {
+                        let msg = {};
+						msg.type = "textChat";
+						msg.payload = sendMessageBox.value;
+						msg.sender = grabUsername();
+						msg.private = false;
+						sendMessageBox.value = "";
+                        for (var peerConn in conn) {
+                            conn[peerConn].send(msg);
+                            console.log("Sent group message to " + peerConn);
+                        }
+						console.log("Completed group broadcast: " + msg.payload)
+						addMessage(msg);
+                    } else {
+                        console.log("Cannot send message because no external peers are connected");
+                        addSystemMessage("You must be connected to at least 1 external peer to send a message.");
+                    }
+                };
+                // Clear messages box
+                clearButton.onclick = function () {
+					console.log("Clearing Messages");
+                    message.innerHTML = " ";
+                };
+
+                // Should be pretty self-explanatory
+                clickToCopy.onclick = function () {copyInviteUrl();};
+
+                // Watch for file uploads and send them
+                fileButton.onchange = function (e) {
+                    var file = e.target.files[0]; // fetch uploaded file
+                    var blob = new Blob(e.target.files, {type: file.type}); // create binary blob of file
+                    
+                    let msg = {};
+                    msg.type = "imageChat";
+                    msg.fileType = file.type; // need to pass through file type so receiver can recreate it from blob
+                    msg.payload = blob;
+                    console.log("about to send, msg payload size is " + msg.payload.size);
+                    msg.sender = grabUsername();
+                    msg.private = false;
+                    for (var peerConn in conn) {
+                        conn[peerConn].send(msg);
+                        console.log("Sent group message to " + peerConn);
+                    }
+                    console.log("Completed group broadcast: " + JSON.stringify(msg))
+                    addImage(msg);
+                }
+                connectButton.onclick = function () {connectExternalPeer(peerIdInput.value.trim()); peerIdInput.value = '';};
+                initialize();
+        </script>
+    </body>
+</html>
