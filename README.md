@@ -1,5 +1,7 @@
 # Chatter
-A simple peer-to-peer chat platform built using [PeerJS](https://github.com/peers/peerjs).
+A simple peer-to-peer chat platform built using [PeerJS](https://github.com/peers/peerjs)
+
+Try it out at https://ldaw.github.io/chatter.html.
 
 ## Current features
 * Multi-user group chat rooms
